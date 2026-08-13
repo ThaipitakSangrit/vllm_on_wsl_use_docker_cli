@@ -1,0 +1,196 @@
+###### INSTALL & PREPARATION ######
+
+1. ติดตั้ง WSL (ทำบน PowerShell)
+wsl --install
+
+2. เข้า WSL Ubuntu 
+wsl --list --verbose
+wsl -d Ubuntu
+
+3. ติดตั้ง Docker Engine + NVIDIA Container Toolkit
+sudo apt update && sudo apt install -y docker.io
+
+# ตั้งค่าให้ Docker เข้าถึง GPU และสามารถคุยกับ NVIDIA Driver ได้ [ไม่งั้นจะมีปัญหา เวลาเรียกใช้ docker run --gpus all ... ]
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt update
+sudo apt install -y nvidia-container-toolkit
+sudo systemctl restart docker
+
+4. ทดสอบว่า Docker เห็น GPU หรือไม่
+sudo docker run --rm --gpus all nvidida/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
+
+
+###### INFERENCE OFFLINE (Docker) ######
+
+0. เข้า WSL
+wsl --list --verbose
+wsl -d Ubuntu
+
+1. เตรียมโฟลเดอร์สำหรับเก็บโค้ด/โมเดล
+mkdir -p ~/projects/vllm
+cp /mnt/d/tumlen/python/vllm/inference_offline.py ~/projects/vllm/
+cd ~/projects/vllm
+
+2. บอก Docker ว่า ถ้ามี --gpus ให้ไปเรียก NVIDIA Container Runtime นะ
+sudo nvidia-ctk runtime configure --runtime=docker
+
+3. รีสตาร์ท Docker Daemon เพื่อให้โหลดการตั้งค่าใหม่
+sudo systemctl restart docker
+
+4. รัน Script Offline ผ่าน vLLM Docker
+sudo docker run --rm \
+  --gpus '"device=1"' \
+  -e VLLM_WSL2_ENABLE_PIN_MEMORY=1 \
+  -v ~/projects/vllm:/app \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -w /app \
+  --ipc=host \
+  --entrypoint python3 \
+  vllm/vllm-openai:latest \
+  inference_offline.py
+
+
+###### HOST & INFERENCE TO API SERVER (Docker) รันเสร็จแล้วปิดทิ้งทันที ######
+
+0. เข้า WSL
+wsl --list --verbose
+wsl -d Ubuntu
+
+1. สั่งเปิด vLLM API Server ด้วย Docker Container
+sudo docker run --rm \
+  --gpus '"device=1"' \
+  -e VLLM_WSL2_ENABLE_PIN_MEMORY=1 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  --ipc=host \
+  -p 8000:8000 \
+  vllm/vllm-openai:latest \
+  Qwen/Qwen2.5-VL-7B-Instruct \
+  --max-model-len 8192
+
+2. ทดสอบยิง Request ไปยัง API Server
+sudo docker run --rm \
+  -v ~/projects/vllm:/app \
+  -w /app \
+  --network host \
+  --entrypoint python3 \
+  vllm/vllm-openai:latest \
+  inference_to_server.py
+
+
+###### ALLOW PORT FOR OTHER COMPUTER USE ######
+
+1. portproxy จะสร้าง port ตัวกลางให้ติดต่อกับ vLLM [พิมใน PowerShell]
+netsh interface portproxy add v4tov4 `
+listenaddress=0.0.0.0 `
+listenport=8000 `
+connectaddress=127.0.0.1 `
+connectport=8000
+
+  Client เครื่องอื่น
+        |
+        |
+        v
+  10.x.x.x:8000
+        |
+        |
+ Windows PortProxy
+        |
+        |
+        v
+  127.0.0.1:8000
+        |
+        |
+        v
+    vLLM API
+
+2. เปิด Windows Firewall [พิมใน PowerShell]
+New-NetFirewallRule `
+-DisplayName "vLLM API 8000" `
+-Direction Inbound `
+-Protocol TCP `
+-LocalPort 8000 `
+-Action Allow
+
+
+###### HOST SERVICE ######
+
+1. CREATE CONTAINER FOR HOST SERVICE [ถ้ามีแล้วไม่ต้องทำ]
+sudo docker run -d \
+  --name vllm-qwen \
+  --gpus '"device=1"' \
+  -e VLLM_WSL2_ENABLE_PIN_MEMORY=1 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  --ipc=host \
+  -p 8000:8000 \
+  --restart always \
+  vllm/vllm-openai:latest \
+  Qwen/Qwen2.5-VL-7B-Instruct \
+  --max-model-len 8192
+
+2. CHECK CONTAINTER SERVICE RUNNING [ดูตรง STATUS]
+sudo docker ps
+
+3. START SERVICE
+sudo docker start vllm-qwen
+
+4. CHECK LOG SERVICE
+sudo docker logs -f vllm-qwen
+
+5. STOP SERVICE
+sudo docker stop vllm-qwen
+
+6. POST INFERENCE
+curl http://localhost:8000/v1/models
+
+====================================================================
+
+Windows
+    │
+WSL Ubuntu
+    │
+docker run
+    │
+┌────────────────────────────┐
+│ vllm/vllm-openai Container            │
+│                                       │
+│ python3  ← ตัวนี้รันสคริปต์                 │
+│ openai     ติดตั้งแล้ว                       │
+│ torch      ติดตั้งแล้ว                       │
+│ vllm       ติดตั้งแล้ว                       │
+└────────────────────────────┘
+
+หมายเหตุ
+
+ไม่ต้องติดตั้ง Python
+ไม่ต้องสร้าง venv
+ไม่ต้อง pip install openai
+
+Container vllm/vllm-openai มี
+- Python
+- vLLM
+- torch
+- transformers
+- openai
+- pillow
+
+ติดตั้งไว้เรียบร้อยแล้ว
+
+====================================================================
+
+Linux
+ └── Ubuntu
+     └── home
+         └── user
+             └── projects
+                 └── vllm
+
+~/projects/vllm
+│
+├── inference_offline.py
+├── inference_to_server.py
+└── sample.jpg
+

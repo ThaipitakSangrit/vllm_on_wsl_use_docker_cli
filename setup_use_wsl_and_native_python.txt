@@ -1,0 +1,88 @@
+###### INSTALL ######
+
+1. ติดตั้ง wsl
+wsl --install
+
+2. เช็ค driver nvidia ใน wsl
+nvidia-smi
+
+3. ติดตั้ง cuda toolkit ใน wsl
+wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt update
+sudo apt install -y cuda-toolkit-12-6
+
+4. ตั้งค่า environment variable บอกระบบว่า CUDA อยู่ที่ไหน
+echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+source ~/.bashrc
+
+5. ติดตั้ง python
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3 python3-pip python3-venv build-essential
+
+6. เช็ค cuda version
+nvcc --version
+
+7. สร้าง .vemv python
+python3 -m venv ~/.venv
+source ~/.venv/bin/activate
+
+.venv จะอยู่ที่นี่ >> \\wsl.localhost\Ubuntu\home\user\.venv
+
+8. install library
+pip install --upgrade pip
+pip install vllm
+
+8.1. เสริมถ้า Error [เวอร์ชัน gcc ใหม่เกินไป สำหรับ CUDA 12.6]
+sudo apt install -y gcc-12 g++-12
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+gcc --version
+rm -rf ~/.cache/flashinfer
+rm -rf ~/.cache/vllm
+
+8.2. ถ้ารัน Qwen2.5-VL-7B ต้อง install library เพิ่ม
+pip install qwen-vl-utils pillow
+
+9. script test
+export CUDA_VISIBLE_DEVICES=1
+python3 -c "
+from vllm import LLM, SamplingParams
+llm = LLM(model='facebook/opt-125m')
+output = llm.generate(['Hello, my name is'], SamplingParams(max_tokens=20))
+print(output[0].outputs[0].text)
+"
+
+###### INFERENCE OFFLINE ######
+
+1. เช็คว่ามี WSL ของอะไรบ้างที่เคยลงไว้ เช่น Ubuntu หรือ Podman
+wsl --list --verbose
+wsl -d Ubuntu
+
+2. สร้าง folder project และ copy script python จาก windows ใน wsl
+mkdir -p ~/projects/vllm
+cp /mnt/d/tumlen/python/vllm/inference_offline.py ~/projects/vllm/
+
+3. เข้าโฟลเดอร์ และ activate
+cd ~/projects/vllm
+source ~/vllm-env/bin/activate
+
+4. รัน script ใน wsl 
+export CUDA_VISIBLE_DEVICES=1
+python3 inference_offline.py
+
+5. แก้โค้ด python ใน wsl
+code ~/projects/vllm
+
+###### INFERENCE TO API SERVER ######
+
+pip install openai
+
+cd ~/projects/vllm
+source ~/vllm-env/bin/activate
+
+export CUDA_VISIBLE_DEVICES=1
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8000 --max-model-len 8192
+
+python3 request_infer_to_api_server.py
